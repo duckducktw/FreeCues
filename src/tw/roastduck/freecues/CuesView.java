@@ -49,16 +49,45 @@ final class CuesView extends View implements Choreographer.FrameCallback {
         baseR = 6.5f * dp;
     }
 
+    private long lastTickMs;
+    private final Runnable watchdog = new Runnable() {
+        @Override public void run() {
+            if (!running) return;
+            // 關屏時部分 ROM（Samsung）會丟掉 vsync callback 且亮屏後不再補發 → 超過 400ms 沒跑就重掛
+            if (android.os.SystemClock.uptimeMillis() - lastTickMs > 400) kick();
+            postDelayed(this, 500);
+        }
+    };
+
     void start() {
         if (running) return;
         running = true;
-        lastFrameNs = 0;
-        Choreographer.getInstance().postFrameCallback(this);
+        kick();
+        removeCallbacks(watchdog);
+        postDelayed(watchdog, 500);
+    }
+
+    /** 重新掛上逐幀回呼（亮屏、視窗重新可見、watchdog 都會呼叫）。 */
+    void kick() {
+        if (!running) return;
+        lastFrameNs = 0;                       // 避免把關屏期間算成一大段 dt
+        lastTickMs = android.os.SystemClock.uptimeMillis();
+        Choreographer ch = Choreographer.getInstance();
+        ch.removeFrameCallback(this);
+        ch.postFrameCallback(this);
+        invalidate();
     }
 
     void stop() {
         running = false;
+        removeCallbacks(watchdog);
         Choreographer.getInstance().removeFrameCallback(this);
+    }
+
+    @Override
+    protected void onWindowVisibilityChanged(int v) {
+        super.onWindowVisibilityChanged(v);
+        if (v == VISIBLE) kick();
     }
 
     private Runnable onGone;
@@ -80,6 +109,7 @@ final class CuesView extends View implements Choreographer.FrameCallback {
     @Override
     public void doFrame(long now) {
         if (!running) return;
+        lastTickMs = android.os.SystemClock.uptimeMillis();
         float dt = lastFrameNs == 0 ? 0.016f : (now - lastFrameNs) / 1e9f;
         lastFrameNs = now;
         proc.step(dt, out);

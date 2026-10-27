@@ -76,6 +76,11 @@ public final class CuesService extends Service
         view.start();
         registerSensors();
         prefs.registerOnSharedPreferenceChangeListener(this);
+        android.content.IntentFilter f = new android.content.IntentFilter();
+        f.addAction(Intent.ACTION_SCREEN_ON);
+        f.addAction(Intent.ACTION_USER_PRESENT);
+        f.addAction(Intent.ACTION_SCREEN_OFF);
+        registerReceiver(screenRx, f);
         running = true;
         instance = this;
         TileService.requestListeningState(this, new ComponentName(this, CuesTile.class));
@@ -202,8 +207,20 @@ public final class CuesService extends Service
         else startForeground(1, n);
     }
 
+    private final android.content.BroadcastReceiver screenRx = new android.content.BroadcastReceiver() {
+        @Override public void onReceive(Context c, Intent i) {
+            if (view == null) return;
+            if (Intent.ACTION_SCREEN_OFF.equals(i.getAction())) { proc.reset(); return; }
+            // 亮屏/解鎖：重設濾波狀態（關屏期間累積的舊值）+ 重掛逐幀迴圈 + 重新註冊感測器
+            registerSensors();
+            view.kick();
+            view.peek(1200);
+        }
+    };
+
     @Override
     public void onDestroy() {
+        try { unregisterReceiver(screenRx); } catch (Exception ignored) {}
         running = false;
         instance = null;
         if (sm != null) sm.unregisterListener(this);
