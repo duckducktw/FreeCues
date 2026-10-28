@@ -27,6 +27,22 @@ public final class MotionProcessorTest {
         return new float[]{1, 0, 0, 0, (float) c, (float) -s, 0, (float) s, (float) c};
     }
 
+    /** 平放；陀螺儀 (0, wPitch, wz) rad/s、側向加速度 latAcc（裝置 x）、前向 fwdAcc（裝置 y），100Hz。 */
+    static float[] turn(MotionProcessor p, float wz, float latAcc, float wPitch, float fwdAcc, float secs) {
+        float[] acc = new float[2], o = new float[2];
+        int frames = (int) (secs * 60);
+        for (int fr = 0; fr < frames; fr++) {
+            p.onRotation(tilt(0));
+            for (int k = 0; k < 2; k++) {
+                p.onGyro(wPitch, 0, wz, 0.0083f);
+                p.onLinear(latAcc, fwdAcc, 0, 0.0083f);
+            }
+            p.step(1 / 60f, o);
+            acc[0] += o[0]; acc[1] += o[1];
+        }
+        return acc;
+    }
+
     static String f(float[] v) { return String.format("(%.1f, %.1f)", v[0], v[1]); }
 
     public static void main(String[] a) {
@@ -66,18 +82,36 @@ public final class MotionProcessorTest {
         float[] r6b = run(p, tilt(0), 0, 0, 0, 1f);
         check("decays after accel stops", Math.abs(r6b[1]) < 1f, "tail " + f(r6b));
 
-        // 7. 左轉（heading 減少）→ 點往右
-        p = new MotionProcessor();
-        float[] o = new float[2], acc = new float[2];
-        for (int i = 0; i <= 60; i++) {
-            double h = -Math.toRadians(i * 0.5);  // 每幀左轉 0.5°
-            float c = (float) Math.cos(h), s = (float) Math.sin(h);
-            // 繞 z 旋轉：裝置 y 軸指向 heading
-            p.onRotation(new float[]{c, s, 0, -s, c, 0, 0, 0, 1});
-            p.step(1 / 60f, o);
-            acc[0] += o[0]; acc[1] += o[1];
-        }
-        check("left turn → dots move right", acc[0] > 20, f(acc));
+        // 7. 車左轉（陀螺儀 ωz>0 + 向心加速度向左，v≈10 m/s）→ 點往右
+        float[] acc = turn(new MotionProcessor(), 0.3f, -3.0f, 0, 0, 2f);
+        check("car left turn (gyro+centripetal) → dots move right", acc[0] > 40, f(acc));
+
+        // 7b. 車右轉 → 點往左
+        acc = turn(new MotionProcessor(), -0.3f, 3.0f, 0, 0, 2f);
+        check("car right turn → dots move left", acc[0] < -40, f(acc));
+
+        // 7c. 手在原地水平轉手機（ωz 有、向心加速度≈0）→ 不動
+        acc = turn(new MotionProcessor(), 0.6f, 0, 0, 0, 2f);
+        check("hand yaw spin, no centripetal → still", Math.abs(acc[0]) < 3 && Math.abs(acc[1]) < 3, f(acc));
+
+        // 7d. 手翻手機（俯仰 1.5 rad/s）+ 重力洩漏造成的假加速度 2 m/s² → 不動
+        acc = turn(new MotionProcessor(), 0, 0, 1.5f, 2.0f, 1f);
+        check("hand pitch flip + leaked accel → still", Math.abs(acc[0]) < 3 && Math.abs(acc[1]) < 3, f(acc));
+
+        // 7e. 翻完後 1 秒內恢復正常反應
+        MotionProcessor q = new MotionProcessor();
+        turn(q, 0, 0, 1.5f, 2.0f, 0.5f);
+        turn(q, 0, 0, 0, 0, 1.2f);
+        float[] after = run(q, tilt(0), 0, 1f, 0, 1f);
+        check("recovers after hand rotation", after[1] > 30, f(after));
+
+        // 7f. 單幀位移上限（不瞬移）
+        q = new MotionProcessor();
+        float[] o1 = new float[2];
+        for (int i = 0; i < 30; i++) q.onLinear(0, 50f, 0, 0.01f);
+        float maxStep = 0;
+        for (int i = 0; i < 120; i++) { q.step(1 / 60f, o1); maxStep = Math.max(maxStep, (float) Math.hypot(o1[0], o1[1])); }
+        check("per-frame displacement capped", maxStep <= MotionProcessor.MAX_SPEED / 60f + 0.01f, "max " + maxStep);
 
         // 8. 橫放 rotation=1：前進仍是螢幕往下
         p = new MotionProcessor();

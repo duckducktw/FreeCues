@@ -30,6 +30,7 @@ final class CuesView extends View implements Choreographer.FrameCallback {
     private long lastMotionNs, lastFrameNs, showUntilNs;
     private boolean running;
     private int fc;
+    private float dbgMax;
     private final float[] out = new float[2];
 
     // 版面
@@ -71,6 +72,7 @@ final class CuesView extends View implements Choreographer.FrameCallback {
     void kick() {
         if (!running) return;
         lastFrameNs = 0;                       // 避免把關屏期間算成一大段 dt
+        proc.step(0.016f, out);                // 丟掉暫停期間累積的偏航，不一次套用
         lastTickMs = android.os.SystemClock.uptimeMillis();
         Choreographer ch = Choreographer.getInstance();
         ch.removeFrameCallback(this);
@@ -116,6 +118,11 @@ final class CuesView extends View implements Choreographer.FrameCallback {
         clock += dt;
         offX += out[0] * dp;
         offY += out[1] * dp;
+        if (BuildConfig.DEBUG_LOG) {
+            float st = (float) Math.hypot(out[0], out[1]);
+            if (st > dbgMax) dbgMax = st;
+            if ((fc % 30) == 0) { android.util.Log.d("FreeCuesM", "maxStepDp=" + dbgMax + " " + proc.debug()); dbgMax = 0; }
+        }
         if (proc.motion() > MOVING_DP_S) lastMotionNs = now;
 
         boolean show = !dismissing && (always || now - lastMotionNs < HOLD_NS || now < showUntilNs);

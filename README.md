@@ -23,6 +23,13 @@ Download `FreeCues.apk` from [Releases](../../releases), allow "Display over oth
 
 See [`docs/SPEC.md`](docs/SPEC.md) for the behavioural spec.
 
+## Motion engine
+
+- Linear acceleration is projected onto the car's forward/lateral axes in world space, so the phone can be held at any angle.
+- Turns come from the gyroscope's world-vertical rate, and are only applied when consistent with centripetal acceleration (`v = a_lat / ω`), so spinning the phone in your hand doesn't move the dots.
+- Fast pitch/roll (hand rotation) mutes all input for ~0.5 s, avoiding gravity leaking into linear acceleration.
+- `GAME_ROTATION_VECTOR` (no magnetometer) avoids heading jumps near metal; per-frame displacement is capped.
+
 ## Build
 
 No Gradle. Requires Android SDK `build-tools;35.0.0` and `platforms;android-35`, JDK 17+.

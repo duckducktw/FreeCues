@@ -39,7 +39,7 @@ public final class CuesService extends Service
     private final MotionProcessor proc = new MotionProcessor();
     private SharedPreferences prefs;
     private final float[] r9 = new float[9];
-    private long lastLinNs;
+    private long lastLinNs, lastGyroNs;
     private boolean injecting;
     private int dbg;
 
@@ -106,14 +106,18 @@ public final class CuesService extends Service
 
     private void registerSensors() {
         sm.unregisterListener(this);
-        Sensor rv = sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
-        if (rv == null) rv = sm.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
+        // GAME_ROTATION_VECTOR 不用磁力計 → 車內鐵件/磁場重新校正不會讓方位角突跳
+        Sensor rv = sm.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
+        if (rv == null) rv = sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
         if (rv != null) sm.registerListener(this, rv, 10_000);
+        Sensor gy = sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
+        if (gy != null) sm.registerListener(this, gy, 10_000);
         Sensor lin = sm.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
         if (lin != null) sm.registerListener(this, lin, 10_000);
         proc.reset();
         proc.clearRotation();
         lastLinNs = 0;
+        lastGyroNs = 0;
     }
 
     private void applyPrefs() {
@@ -140,7 +144,12 @@ public final class CuesService extends Service
     @Override
     public void onConfigurationChanged(Configuration c) {
         super.onConfigurationChanged(c);
-        proc.rotation = wm.getDefaultDisplay().getRotation();
+        int rot = wm.getDefaultDisplay().getRotation();
+        if (rot != proc.rotation) {           // 換橫豎屏：舊濾波值是舊軸向 → 清掉，避免一次甩出
+            proc.rotation = rot;
+            proc.reset();
+            proc.clearRotation();
+        }
     }
 
     @Override
@@ -152,6 +161,10 @@ public final class CuesService extends Service
             SensorManager.getRotationMatrixFromVector(r9, v);
             proc.onRotation(r9);
             if (BuildConfig.DEBUG_LOG && (++dbg % 50) == 0) android.util.Log.v("FreeCuesS", "rot " + java.util.Arrays.toString(v));
+        } else if (t == Sensor.TYPE_GYROSCOPE) {
+            float dt = lastGyroNs == 0 ? 0.01f : (e.timestamp - lastGyroNs) / 1e9f;
+            lastGyroNs = e.timestamp;
+            proc.onGyro(v[0], v[1], v[2], dt);
         } else if (t == Sensor.TYPE_LINEAR_ACCELERATION) {
             float dt = lastLinNs == 0 ? 0.01f : (e.timestamp - lastLinNs) / 1e9f;
             lastLinNs = e.timestamp;
