@@ -18,23 +18,26 @@ package tw.roastduck.freecues;
  */
 final class MotionProcessor {
     static final float NOISE_FLOOR = 0.10f;   // m/s²
-    static final float TAU = 0.12f;           // s 線性加速度低通
+    static final float TAU = 0.10f;           // s 線性加速度低通
     static final float DAMP = 2.0f;           // 1/s 速度阻尼
     static final float MAX_SPEED = 900f;      // dp/s 每幀位移上限也由此得出
     static final float BASE_GAIN = 300f;      // dp/s² per m/s²（sensitivity 2.7 時）
     static final float YAW_GAIN = 260f;       // dp per rad（sensitivity 2.7 時）
 
-    // 手動轉手機判定
-    static final float HAND_TILT_ON = 0.55f;  // rad/s 水平角速度（俯仰/側傾）
-    static final float HAND_TILT_OFF = 0.25f;
-    static final float HAND_YAW_MAX = 1.3f;   // rad/s 超過不像車
+    // 手動轉手機判定：看「淨轉動角度」而非瞬間角速度。
+    // 路面震動角速度可達 1–2 rad/s，但來回抵銷、淨角度只有幾度；手轉手機會累積幾十度。
+    static final float HAND_WIN_S = 0.4f;      // 角度洩漏積分時間常數
+    static final float HAND_ANGLE_ON = 0.30f;  // rad（≈17°）
+    static final float HAND_ANGLE_OFF = 0.12f; // rad（≈7°）
+    static final float HAND_FAST_ANGLE = 0.20f; // rad，高轉速時的提早觸發角度
+    static final float HAND_YAW_ANGLE = 0.45f; // rad，0.4 s 內水平轉超過 ≈26° 不像車（車急彎 ≈0.3 rad/s）
     static final float HAND_HOLD_S = 0.35f;   // 停止轉動後維持靜音
     static final float HAND_RECOVER_S = 0.5f; // 之後漸回
 
     // 偏航一致性（v = a_lat/ωz）
-    static final float YAW_DEADBAND = 0.04f;  // rad/s 陀螺儀殘餘 bias
-    static final float V_MIN = 1.5f, V_FULL = 4f, V_MAX = 70f;  // m/s
-    static final float YAW_TAU = 0.35f;       // s 一致性低通
+    static final float YAW_DEADBAND = 0.015f;  // rad/s 陀螺儀殘餘 bias
+    static final float V_MIN = 1.0f, V_FULL = 2.5f, V_MAX = 70f;  // m/s
+    static final float YAW_TAU = 0.25f;       // s 一致性低通
 
     float sensitivity = 2.7f;
     /** Display.getRotation()：0..3 */
@@ -53,7 +56,8 @@ final class MotionProcessor {
     private float yawWeight;         // 0..1 車輛轉彎可信度
     private float handTimer = 0;     // >0 = 手動中／保持中
     private float handGate = 1f;     // 1 = 正常，0 = 靜音
-    private float handRate;          // 最近一次判定用速率（debug）
+    private float handRate;          // 最近一次判定用淨角度（debug）
+    private float angX, angY, angZ;  // 世界座標下的洩漏積分轉角（rad）
     private float lastYawSpeed;
 
     // 無陀螺儀後援：heading 差分
@@ -68,6 +72,7 @@ final class MotionProcessor {
         yawWeight = 0;
         handTimer = 0;
         handGate = 1f;
+        angX = angY = angZ = 0;
         havePrevHeading = false;
     }
 
@@ -145,17 +150,31 @@ final class MotionProcessor {
         haveGyro = true;
         dt = Math.max(0.001f, Math.min(0.05f, dt));
         float[] w = toWorld(gx, gy, gz);
-        float wh = (float) Math.hypot(w[0], w[1]);   // 俯仰/側傾 → 手
         wz = w[2];                                   // 垂直軸 → 車偏航候選（CCW/左轉為正）
 
-        // 手動判定（遲滯）
-        handRate = Math.max(wh, Math.abs(wz) > HAND_YAW_MAX ? Math.abs(wz) : 0);
-        if (handRate > HAND_TILT_ON || Math.abs(wz) > HAND_YAW_MAX) handTimer = HAND_HOLD_S + HAND_RECOVER_S;
-        else if (handRate > HAND_TILT_OFF && handTimer > 0) handTimer = Math.max(handTimer, HAND_HOLD_S + HAND_RECOVER_S);
+        // 手動判定：各軸角速度做洩漏積分 → 震動互相抵銷，持續轉動才累積
+        float leak = (float) Math.exp(-dt / HAND_WIN_S);
+        angX = angX * leak + w[0] * dt;
+        angY = angY * leak + w[1] * dt;
+        angZ = angZ * leak + w[2] * dt;
+        if (handTimer > 0 && Math.hypot(w[0], w[1]) < 0.25f) {
+            float fast = (float) Math.exp(-dt / 0.08f);
+            angX *= fast; angY *= fast; angZ *= fast;
+        }
+        float tiltAng = (float) Math.hypot(angX, angY);
+        handRate = Math.max(tiltAng, Math.abs(angZ) * HAND_ANGLE_ON / HAND_YAW_ANGLE);
+        float wh = (float) Math.hypot(w[0], w[1]);
+        // 快速判定：轉速高「且」已累積 >0.10 rad（震動來回抵銷，淨角度只有 0.02–0.08）
+        boolean fast = wh > 0.8f && tiltAng > HAND_FAST_ANGLE;
+        if (fast || tiltAng > HAND_ANGLE_ON || Math.abs(angZ) > HAND_YAW_ANGLE) handTimer = HAND_HOLD_S + HAND_RECOVER_S;
+        else if (wh > 0.25f && tiltAng > HAND_ANGLE_OFF && handTimer > 0) handTimer = HAND_HOLD_S + HAND_RECOVER_S;
         else handTimer = Math.max(0, handTimer - dt);
         handGate = handTimer <= 0 ? 1f
                 : handTimer > HAND_RECOVER_S ? 0f
                 : 1f - smooth(handTimer / HAND_RECOVER_S);
+        // 觸發前的預衰減：淨角度 0.10→0.20 rad 之間漸弱（震動淨角度 <0.09，不受影響）
+        if (handTimer <= 0 && wh > 0.5f)
+            handGate = Math.min(handGate, 1f - smooth((tiltAng - 0.10f) / 0.10f));
 
         // 偏航一致性：v = -a_lat/ωz（左轉 ωz>0、向心加速度向左 → lat<0）
         float k = dt / (YAW_TAU + dt);
@@ -169,7 +188,7 @@ final class MotionProcessor {
             wt = v <= V_MIN || v > V_MAX ? 0 : clamp01((v - V_MIN) / (V_FULL - V_MIN));
         }
         // 權重本身也平滑，避免開關造成跳動
-        yawWeight += (wt - yawWeight) * Math.min(1f, dt / 0.25f);
+        yawWeight += (wt - yawWeight) * Math.min(1f, dt / 0.15f);
         float wUse = Math.abs(wz) < YAW_DEADBAND ? 0 : wz - Math.copySign(YAW_DEADBAND, wz);
         pendingYaw += wUse * dt * yawWeight * handGate;
     }
@@ -205,7 +224,7 @@ final class MotionProcessor {
         float s = sensitivity / 2.7f;
         vx += -soft(lat) * BASE_GAIN * s * dt;
         vy += soft(fwd) * BASE_GAIN * s * dt;
-        float d = (float) Math.exp(-DAMP * dt);
+        float d = (float) Math.exp(-(DAMP + 10f * (1f - handGate)) * dt);
         vx *= d;
         vy *= d;
         float sp = (float) Math.hypot(vx, vy);

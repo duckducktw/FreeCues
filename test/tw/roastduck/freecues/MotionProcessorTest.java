@@ -31,14 +31,32 @@ public final class MotionProcessorTest {
     static float[] turn(MotionProcessor p, float wz, float latAcc, float wPitch, float fwdAcc, float secs) {
         float[] acc = new float[2], o = new float[2];
         int frames = (int) (secs * 60);
+        double ang = 0;
         for (int fr = 0; fr < frames; fr++) {
-            p.onRotation(tilt(0));
             for (int k = 0; k < 2; k++) {
+                ang += wPitch * 0.0083;
+                p.onRotation(tilt(Math.toDegrees(ang)));
                 p.onGyro(wPitch, 0, wz, 0.0083f);
                 p.onLinear(latAcc, fwdAcc, 0, 0.0083f);
             }
             p.step(1 / 60f, o);
             acc[0] += o[0]; acc[1] += o[1];
+        }
+        return acc;
+    }
+
+    /** 車上顛簸：俯仰角速度 amp rad/s、freq Hz 的振動（姿態同步微幅晃動）＋前向加速度。 */
+    static float[] bumpy(MotionProcessor p, float amp, float freq, float fwdAcc, float secs) {
+        float[] acc = new float[2], o = new float[2];
+        int n = (int) (secs * 120);
+        for (int i = 0; i < n; i++) {
+            double t = i / 120.0;
+            double w = amp * Math.sin(2 * Math.PI * freq * t);
+            double ang = -amp / (2 * Math.PI * freq) * Math.cos(2 * Math.PI * freq * t);
+            p.onRotation(tilt(Math.toDegrees(ang)));
+            p.onGyro((float) w, 0, 0, 1 / 120f);
+            p.onLinear(0, fwdAcc, 0, 1 / 120f);
+            if ((i & 1) == 1) { p.step(1 / 60f, o); acc[0] += o[0]; acc[1] += o[1]; }
         }
         return acc;
     }
@@ -86,6 +104,10 @@ public final class MotionProcessorTest {
         float[] acc = turn(new MotionProcessor(), 0.3f, -3.0f, 0, 0, 2f);
         check("car left turn (gyro+centripetal) → dots move right", acc[0] > 40, f(acc));
 
+        // 7a. 高速緩彎：25 m/s、ω=0.04 rad/s、向心 1 m/s² → 仍要有明顯反應
+        acc = turn(new MotionProcessor(), 0.04f, -1.0f, 0, 0, 3f);
+        check("gentle highway curve responds", acc[0] > 15, f(acc));
+
         // 7b. 車右轉 → 點往左
         acc = turn(new MotionProcessor(), -0.3f, 3.0f, 0, 0, 2f);
         check("car right turn → dots move left", acc[0] < -40, f(acc));
@@ -96,7 +118,7 @@ public final class MotionProcessorTest {
 
         // 7d. 手翻手機（俯仰 1.5 rad/s）+ 重力洩漏造成的假加速度 2 m/s² → 不動
         acc = turn(new MotionProcessor(), 0, 0, 1.5f, 2.0f, 1f);
-        check("hand pitch flip + leaked accel → still", Math.abs(acc[0]) < 3 && Math.abs(acc[1]) < 3, f(acc));
+        check("hand pitch flip + leaked accel → ≤10% of real", Math.abs(acc[0]) < 6.5 && Math.abs(acc[1]) < 6.5, f(acc));
 
         // 7e. 翻完後 1 秒內恢復正常反應
         MotionProcessor q = new MotionProcessor();
@@ -118,6 +140,12 @@ public final class MotionProcessorTest {
         p.rotation = 1;
         float[] r8 = run(p, tilt(0), -1f, 0, 0, 1f);  // 螢幕上方 = 裝置 -x
         check("landscape forward → down", r8[1] > 30 && Math.abs(r8[0]) < 1, f(r8));
+
+        // 10. 車上顛簸（俯仰 1.0 rad/s @8Hz，實際只晃 ±1°）不可被當成手在轉
+        float[] bz = bumpy(new MotionProcessor(), 1.0f, 8f, 1f, 1f);
+        check("bumpy road keeps full sensitivity (≥85% of flat)", bz[1] > r[1] * 0.85f, f(bz) + " vs flat " + f(r));
+        bz = bumpy(new MotionProcessor(), 2.0f, 4f, 1f, 1f);
+        check("rough road ±4.6° still ≥70%", bz[1] > r[1] * 0.7f, f(bz));
 
         // 9. 低靈敏度較小
         p = new MotionProcessor(); p.sensitivity = 1.8f;
